@@ -316,6 +316,7 @@ input[type=range]{width:100%;accent-color:var(--accent);height:32px;margin:6px 0
         </select>
         <button class="chip" id="fxPm" aria-pressed="false">Palm mute</button>
       </div>
+      <button class="btn" id="fxVoice" hidden>Autre position de l'accord</button>
       <div class="row between">
         <span class="hint" id="fixHint">Chaque correction est enregistrée tout de suite.</span>
         <button class="btn ghost" id="fxUndo">Annuler</button>
@@ -387,10 +388,12 @@ input[type=range]{width:100%;accent-color:var(--accent);height:32px;margin:6px 0
   <section class="view" id="view-transcrire" aria-label="Transcrire">
     <div class="card pad">
       <h2 class="h">Écrire la tablature en jouant</h2>
-      <p class="hint" style="margin-top:6px">Joue une note à la fois (mélodie, riff, solo). Tab Guitare repère les notes, ton tempo et les cases, puis range la tablature dans Mes tablatures. Tu pourras la corriger ensuite.</p>
+      <p class="hint" style="margin-top:6px">Joue des notes une par une ou gratte des accords. Tab Guitare reconnaît les notes, les accords et leur position sur le manche, suit ton tempo, puis range la tablature dans Mes tablatures. Tu pourras la corriger ensuite.</p>
       <div class="grid" style="margin-top:14px">
         <label class="field"><span>Ta guitare</span>
           <select id="trGuitar"><option value="acoustique">Acoustique</option><option value="electrique">Électrique</option></select></label>
+        <label class="field"><span>Ce que tu joues</span>
+          <select id="trPlay"><option value="auto">Notes et accords</option><option value="notes">Notes une par une</option><option value="chords">Accords grattés</option></select></label>
         <label class="field"><span>Tempo</span>
           <select id="trMode"><option value="free">Libre, suit ta vitesse</option><option value="fixed">Fixe, avec un clic</option></select></label>
         <label class="field" id="trBpmField" hidden><span>Tempo du clic (♩ par minute)</span><input id="trBpm" type="number" min="40" max="220" value="80" inputmode="numeric"></label>
@@ -444,7 +447,7 @@ input[type=range]{width:100%;accent-color:var(--accent);height:32px;margin:6px 0
       <ul>
         <li>Accorde ta guitare avant (onglet Accorder) : une corde fausse donne une note fausse.</li>
         <li>Pose le téléphone près de la guitare, dans une pièce calme, et joue les notes bien détachées.</li>
-        <li>Les accords plaqués ne sont pas reconnus : joue-les en arpège, note par note.</li>
+        <li>Accords : majeurs, mineurs, septièmes, sus, add9, neuvièmes, diminués, augmentés, power chords et renversements (ex. D/F♯). Pour une partie rythmique, choisis « Accords grattés ». Deux positions qui donnent les mêmes notes sonnent presque pareil : si la position n'est pas la tienne, touche l'accord dans Corriger puis « Autre position de l'accord ».</li>
         <li>Avec le tempo fixe, mets des écouteurs pour que le micro n'entende pas le clic.</li>
         <li>Guitare électrique : branche-la sur une interface audio USB ou un adaptateur jack et choisis l'entrée (lien « Entrée » ci-dessus). Avec un ampli, pose le téléphone devant, volume modéré. La saturation est acceptée ; les bends et glissés sont notés comme des notes séparées, à corriger ensuite avec « Corriger ».</li>
         <li>Dans l'aperçu Claude, le micro est bloqué : enregistre-toi avec l'appli Enregistreur du téléphone, puis utilise « Importer un enregistrement ». Depuis ta propre page web (https), « Écouter ma guitare » marche en direct.</li>
@@ -1627,7 +1630,7 @@ function eventsToTab(events, ms, tuningId) {
     const nx = events[i + 1], lim = Math.min(nx ? nx.beat : Infinity, mEnd(e.beat));
     const steps = Math.max(1, Math.round((lim - e.beat) * g));
     const techNext = nx && nx.beat < mEnd(e.beat) - 1e-6 && nx.notes.some(n => n.tech) ? 1 : 0;
-    const need = Math.max(...e.notes.map(n => noteTok(n).length)) + 1 + techNext;
+    const need = Math.max(Math.max(...e.notes.map(n => noteTok(n).length)) + 1 + techNext, e.label ? e.label.length + 1 : 0);
     cps = Math.max(cps, Math.ceil(need / steps));
   });
   cps = Math.min(cps, 8);
@@ -1713,12 +1716,14 @@ function updateFixUI() {
   if (!P.fix || !P.song) return;
   const x = selected();
   $$('#fixBar .fix-grid .btn, #fxTech, #fxPm').forEach(b => { b.disabled = !x; });
+  $('#fxVoice').hidden = !(x && x.e.notes.length >= 2);
   if (x) { $('#fxTech').value = fxOf(x.n); $('#fxPm').setAttribute('aria-pressed', String(!!x.e.pm)); }
   $('#fxUndo').disabled = !(P.song.undo && P.song.undo.length);
   if (!x) $('#fixInfo').textContent = 'Touche une note sur la tablature pour la corriger.';
   else {
     const m = tuningOf(P.song.tuning)[x.n.s] + x.n.f, mi = measureIndexAt(x.e.beat);
-    $('#fixInfo').innerHTML = `<b>${noteLabel(m, 'fr')}</b> · corde ${x.n.s + 1} · case ${x.n.f} · mesure ${mi + 1}, temps ${fmtBeat(1 + x.e.beat - P.song.parsed.measures[mi])}`;
+    const chordTxt = x.e.notes.length >= 2 ? `Accord <b>${esc(labelAt(evs(), x.i) || '?')}</b> (${x.e.notes.length} cordes) · ` : '';
+    $('#fixInfo').innerHTML = `${chordTxt}<b>${noteLabel(m, 'fr')}</b> · corde ${x.n.s + 1} · case ${x.n.f} · mesure ${mi + 1}, temps ${fmtBeat(1 + x.e.beat - P.song.parsed.measures[mi])}`;
   }
   $('#fixHint').textContent = P.song.builtin ? 'Ta première correction crée ta version dans Mes tablatures.' : 'Chaque correction est enregistrée tout de suite.';
 }
@@ -1759,8 +1764,53 @@ function applyEdit(mut) {
   P.sel = res.sel || null;
   if (P.sel) P.beat = P.sel.beat;
   updateFixUI(); lastPos = ''; dirty = true;
-  if (res.sound) pluckSelected();
+  if (res.sound === 'chord') strumSelected();
+  else if (res.sound) pluckSelected();
 }
+function strumSelected() {
+  const x = selected(); if (!x) return;
+  audio(); playEvent(x.e, AC.currentTime + 0.02, 1.4);
+}
+// Nom d'accord en vigueur à cet endroit (étiquette de l'accord ou du précédent)
+function labelAt(E, i) { for (let j = i; j >= 0 && j >= i - 32; j--) if (E[j].label) return E[j].label; return null; }
+// Positions possibles pour l'accord joué : celles retenues à l'écoute, sinon la bibliothèque
+function chordListFor(E, i, song) {
+  const ev = E[i], tid = song.tuning || 'standard', tun = tuningOf(tid);
+  const heard = song.alts && song.alts[beatKey(ev.beat)];
+  if (heard && heard.length >= 2) return heard;
+  const lib = chordLib(tid);
+  let entry = null;
+  const lab = labelAt(E, i);
+  if (lab) { const base = lab.split('/')[0]; entry = lib.chords.find(c => CH_ROOTS[c.root] + c.sym === base); }
+  if (!entry) {
+    let mask = 0; const ms2 = ev.notes.filter(n => !n.dead).map(n => noteMidi(n, tun));
+    ms2.forEach(m => { mask |= 1 << pc(m); });
+    const bass = pc(Math.min(...ms2));
+    const ok = lib.chords.filter(c => {
+      let C = 0, Es = 0; CH_Q[c.q][2].forEach(k => { C |= 1 << ((c.root + k) % 12); }); CH_Q[c.q][3].forEach(k => { Es |= 1 << ((c.root + k) % 12); });
+      return !(mask & ~C) && (mask & Es) === Es;
+    });
+    ok.sort((a, b) => ((b.root === bass) - (a.root === bass)) || (Q_PRIOR[b.q] - Q_PRIOR[a.q]));
+    entry = ok[0];
+  }
+  return entry ? entry.list.map(t => ({ name: t.name, fr: t.fr.slice() })) : [];
+}
+const frKey = notes => { const a = [-1, -1, -1, -1, -1, -1]; notes.forEach(n => { if (!n.dead) a[n.s] = n.f; }); return a.join(','); };
+$('#fxVoice').addEventListener('click', () => {
+  if (P.song && !P.song.builtin && !CHLIB[P.song.tuning || 'standard']) toast('Préparation des accords…');
+  setTimeout(() => applyEdit((E, i, e) => {
+    const list = chordListFor(P.song.parsed.events, i, P.song);
+    if (list.length < 2) { toast("Pas d'autre position connue pour cet accord"); return null; }
+    const cur = list.findIndex(a => a.fr.join(',') === frKey(e.notes));
+    const k = (cur + 1) % list.length, nx = list[k];
+    e.notes = []; nx.fr.forEach((f, s2) => { if (f >= 0) e.notes.push({ s: s2, f }); });
+    const curName = labelAt(E, i);
+    if (curName && nx.name !== curName && E[i + 1] && !E[i + 1].label && E[i + 1].notes.length >= 2) E[i + 1].label = curName;   // les coups suivants gardent leur nom
+    if (e.label || nx.name !== curName) e.label = nx.name;
+    toast(`${nx.name} · position ${k + 1} sur ${list.length}`);
+    return { sel: { beat: e.beat, s: e.notes[e.notes.length - 1].s }, sound: 'chord' };
+  }), 20);
+});
 const fretBy = d => (E, i, e, n) => {
   const f = n.f + d;
   if (f < 0 || f > 24) { toast(d < 0 ? 'Déjà sur la corde à vide' : 'Plus haut que la case 24'); return null; }
@@ -2135,11 +2185,18 @@ class PitchTracker {
     this.w = 0; this.filled = 0; this.n = 0; this.since = 0; this.hopSq = 0; this.k = 0;
     this.a = 1 - Math.exp(-2 * Math.PI * 5000 / sr); this.l1 = 0; this.l2 = 0; this.dc = 0;
     this.frames = [];
+    this.hist = []; this.hcur = new Float32Array(16384); this.hpos = 0;   // signal ramené à ~16 kHz, gardé pour les accords
     // flux spectral (attaques masquées par la saturation)
     this.fn = 512; this.hann = new Float32Array(512).map((_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / 511));
     this.re = new Float32Array(512); this.im = new Float32Array(512); this.prev = new Float32Array(257);
   }
   get lag() { return Math.ceil(this.N / this.hop); }
+  samples(a, b) {
+    a = Math.max(0, Math.floor(a)); b = Math.min(this.n, Math.floor(b));
+    const out = new Float32Array(Math.max(0, b - a));
+    for (let i = a; i < b; i++) { const ci = i >> 14, off = i & 16383; out[i - a] = ci < this.hist.length ? this.hist[ci][off] : this.hcur[off]; }
+    return out;
+  }
   get time() { return this.n / this.sr; }
   push(x) {
     const a = this.a, f = this.factor;
@@ -2152,6 +2209,8 @@ class PitchTracker {
       this.buf[this.w] = s; this.w = this.w + 1 === this.N ? 0 : this.w + 1;
       if (this.filled < this.N) this.filled++;
       this.hopSq += s * s; this.n++;
+      this.hcur[this.hpos++] = s;
+      if (this.hpos === 16384) { this.hist.push(this.hcur); this.hcur = new Float32Array(16384); this.hpos = 0; }
       if (++this.since >= this.hop) { this.since = 0; this.analyse(); }
     }
   }
@@ -2222,7 +2281,7 @@ const FLUX = { k: 1.7, m: 3, rel: 0.4 };
 const median = a => { const s = a.slice().sort((x, y) => x - y); return s[s.length >> 1]; };
 
 // Découpe le flux de mesures en notes : attaques (montée d'énergie) + changements de hauteur (legato).
-function segmentNotes(frames, tun, lag, clicks, electric) {
+function segmentNotes(frames, tun, lag, clicks, electric, chordFn) {
   const n = frames.length; if (n < 12) return [];
   const hopS = (frames[n - 1].t - frames[0].t) / (n - 1);
   const vals = []; for (const f of frames) if (f.db > -119) vals.push(f.db);
@@ -2241,8 +2300,9 @@ function segmentNotes(frames, tun, lag, clicks, electric) {
   const pk = []; for (let i = 1; i < n - 1; i++) if (frames[i].db > gate && fl[i] > fl[i - 1] && fl[i] >= fl[i + 1] && fl[i] > 3 * fMed) pk.push(fl[i]);
   pk.sort((a, b) => a - b);
   const attackLevel = pk.length ? pk[Math.floor(pk.length * 0.75)] : Infinity;
+  const useFlux = electric || !!chordFn;   // un coup de médiator sur plusieurs cordes monte progressivement : le flux le repère
   const fluxPeak = i => {
-    if (!electric) return false;
+    if (!useFlux) return false;
     if (i + 1 >= n || !(fl[i] > fl[i - 1] && fl[i] >= fl[i + 1])) return false;
     const a = Math.max(0, i - 15), b = Math.min(n, i + 16), mean = (cum[b] - cum[a]) / (b - a);
     return fl[i] > FLUX.k * mean + 0.8 * fMed && fl[i] > FLUX.m * fMed && fl[i] > FLUX.rel * attackLevel;
@@ -2253,7 +2313,7 @@ function segmentNotes(frames, tun, lag, clicks, electric) {
     const mn = Math.min(frames[i - 1].hopDb, frames[i - 2].hopDb, i > 2 ? frames[i - 3].hopDb : Infinity);
     const wasBelow = below >= 5;
     below = h < gate - 3 ? below + 1 : 0;
-    if (i - last < 6) continue;
+    if (i - last < (chordFn ? 9 : 6)) continue;
     const jump = h - frames[i - 1].hopDb;
     if ((h - mn > 5 && jump > 2.5 && h > gate) || (wasBelow && h > gate)) { on.push(i); last = i; }
     else if (h > gate && i - last >= 8 && fluxPeak(i)) { on.push(i); last = i; }
@@ -2266,7 +2326,13 @@ function segmentNotes(frames, tun, lag, clicks, electric) {
     let e = nx, bl = 0;
     for (let j = s + 3; j < nx; j++) { if (frames[j].hopDb < gate - 3) { if (++bl >= 5) { e = j - 4; break; } } else bl = 0; }
     const seq = [];
-    for (let j = s + lag; j <= Math.min(nx - 1, e + lag, n - 1); j++) { const m = midiOf(j); if (m !== null) seq.push({ j, m }); }
+    const jEnd = Math.min(nx - 1, e + lag, n - 1);
+    for (let j = s + lag; j <= jEnd; j++) { const m = midiOf(j); if (m !== null) seq.push({ j, m }); }
+    if (chordFn) {   // accord gratté ? (comparaison au son des positions connues)
+      const conf = seq.length / Math.max(1, jEnd - (s + lag) + 1);
+      const ch = chordFn(frames, s, nx, e, conf, hopS);
+      if (ch) { notes.push({ t: frames[s].t - hopS / 2, end: frames[Math.min(e, n - 1)].t, chord: ch.chord, alts: ch.alts }); continue; }
+    }
     if (seq.length < 2) for (let j = s + 2; j <= Math.min(n - 1, s + lag + 3, nx + lag - 1); j++) { const m = midiOf(j); if (m !== null) seq.push({ j, m }); }
     if (seq.length < 2) continue;
     const runs = [];
@@ -2293,13 +2359,14 @@ function segmentNotes(frames, tun, lag, clicks, electric) {
       if (end - t >= 0.035 || idx === merged.length - 1) notes.push({ t, end: Math.max(end, t + 0.04), midi });
     });
   }
-  if (electric && notes.length > 3) {
+  if (useFlux && notes.length > 3) {
     // fausse attaque juste après une vraie (même note, bien plus serrée que le rythme joué) : on la fusionne
     const io = []; for (let k = 1; k < notes.length; k++) io.push(notes[k].t - notes[k - 1].t);
     const mi = median(io);
     for (let k = notes.length - 1; k >= 1; k--) {
       const a = notes[k - 1], b = notes[k];
-      if (b.midi === a.midi && b.t - a.t < Math.min(0.2, 0.45 * mi)) { a.end = Math.max(a.end, b.end); notes.splice(k, 1); }
+      const same = a.chord ? (b.chord && b.chord.name === a.chord.name) : (a.midi != null && b.midi === a.midi);
+      if (same && b.t - a.t < Math.min(a.chord ? 0.6 : 0.2, 0.45 * mi)) { a.end = Math.max(a.end, b.end); notes.splice(k, 1); }
     }
   }
   return notes;
@@ -2379,11 +2446,269 @@ function assignFrets(midis, tun, place) {
   return out;
 }
 
+/* ================= Accords : bibliothèque de positions et reconnaissance à l'écoute ================= */
+const CH_ROOTS = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
+const CH_ROOTS_FR = ['Do', 'Do♯', 'Ré', 'Mi♭', 'Mi', 'Fa', 'Fa♯', 'Sol', 'La♭', 'La', 'Si♭', 'Si'];
+// [symbole, nom, notes de l'accord (demi-tons depuis la fondamentale), notes indispensables]
+const CH_Q = [
+  ['5', 'quinte (power chord)', [0, 7], [0, 7]],
+  ['', 'majeur', [0, 4, 7], [0, 4]],
+  ['m', 'mineur', [0, 3, 7], [0, 3]],
+  ['7', 'septième', [0, 4, 7, 10], [0, 4, 10]],
+  ['maj7', 'majeur 7', [0, 4, 7, 11], [0, 4, 11]],
+  ['m7', 'mineur 7', [0, 3, 7, 10], [0, 3, 10]],
+  ['6', 'sixte', [0, 4, 7, 9], [0, 4, 9]],
+  ['m6', 'mineur sixte', [0, 3, 7, 9], [0, 3, 9]],
+  ['sus2', 'sus2', [0, 2, 7], [0, 2, 7]],
+  ['sus4', 'sus4', [0, 5, 7], [0, 5, 7]],
+  ['7sus4', '7 sus4', [0, 5, 7, 10], [0, 5, 10]],
+  ['add9', 'add9', [0, 2, 4, 7], [0, 2, 4]],
+  ['madd9', 'mineur add9', [0, 2, 3, 7], [0, 2, 3]],
+  ['9', 'neuvième', [0, 2, 4, 7, 10], [0, 2, 4, 10]],
+  ['m9', 'mineur 9', [0, 2, 3, 7, 10], [0, 2, 3, 10]],
+  ['maj9', 'majeur 9', [0, 2, 4, 7, 11], [0, 2, 4, 11]],
+  ['7#9', '7♯9', [0, 3, 4, 7, 10], [0, 3, 4, 10]],
+  ['dim', 'diminué', [0, 3, 6], [0, 3, 6]],
+  ['dim7', 'diminué 7', [0, 3, 6, 9], [0, 3, 6, 9]],
+  ['m7b5', 'demi-diminué', [0, 3, 6, 10], [0, 3, 6, 10]],
+  ['aug', 'augmenté', [0, 4, 8], [0, 4, 8]]
+];
+// Positions à vide les plus courantes (de la corde grave à l'aiguë) : elles passent devant à son égal
+const OPEN_SHAPES = new Set(['x32010', 'x32000', 'x32310', 'x32030', 'x32033', 'xx0232', 'xx0231', 'xx0212', 'xx0222', 'xx0211', 'xx0230', 'xx0233', '2x0232',
+  '022100', '022000', '020100', '020000', '022030', '022200', '021100', '133211', 'xx3210', 'xx3211', '320003', '320001', '320033', '320000',
+  'x02220', 'x02210', 'x02020', 'x02010', 'x02200', 'x02230', 'x02120', 'x21202', 'x24432', 'x24442', 'x20202', '022xxx', 'x022xx', 'x02420']);
+// Formes de barré déplaçables (grave → aigu, décalées de la case du barré) : forme de Mi et forme de La
+const MOVABLE = ['022100', '022000', '020100', '020000', '021100', '022200', '022xxx', '02xxxx', 'x02220', 'x02210', 'x02020', 'x02010', 'x02120', 'x02230', 'x022xx', 'x0221x', 'x0222x'];
+for (let b = 1; b <= 12; b++) for (const m of MOVABLE) {
+  const sh = m.split('').map(c => c === 'x' ? 'x' : String(+c + b)).map(c => c === 'x' ? c : (+c > 9 ? '(' + c + ')' : c));
+  OPEN_SHAPES.add(sh.join(''));
+}
+// Fréquence d'usage des types d'accords (index de CH_Q)
+const Q_PRIOR = [0.25, 1.0, 0.9, 0.6, 0.35, 0.55, 0.15, 0.1, 0.25, 0.3, 0.25, 0.25, 0.1, 0.15, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.05];
+const CH_M0 = 36, CH_NB = 65;
+const CH_W = { top: 72, floor: 0.2, w: null };
+function chW() {
+  if (CH_W.w) return CH_W.w;
+  CH_W.w = new Float32Array(CH_NB).map((_, i) => { const m = i + CH_M0; return m <= CH_W.top ? 1 : Math.max(CH_W.floor, 1 - (1 - CH_W.floor) * (m - CH_W.top) / (100 - CH_W.top)); });
+  return CH_W.w;
+}   // profils de Do2 à Mi7, un compartiment par demi-ton
+function chordName(root, q, bassPc) {
+  const n = CH_ROOTS[root] + CH_Q[q][0];
+  return bassPc === root ? n : `${n}/${CH_ROOTS[bassPc]}`;
+}
+function chordNameFr(root, q, bassPc) {
+  const n = `${CH_ROOTS_FR[root]} ${CH_Q[q][1]}`;
+  return bassPc === root ? n : `${n}, basse ${CH_ROOTS_FR[bassPc]}`;
+}
+function specVec(midis) {   // empreinte attendue : chaque note avec ses harmoniques
+  const v = new Float32Array(CH_NB);
+  for (const n of midis) {
+    const f0 = mtof(n);
+    for (let h = 1; h <= 10; h++) {
+      const f = f0 * h; if (f > 2800) break;
+      const mm = 69 + 12 * Math.log2(f / 440) - CH_M0, a = Math.pow(h, -0.9) * f / (f + 80);
+      const i = Math.floor(mm), w = mm - i;
+      if (i >= 0 && i < CH_NB) v[i] += a * a * (1 - w);
+      if (i + 1 >= 0 && i + 1 < CH_NB) v[i + 1] += a * a * w;
+    }
+  }
+  const W = chW(); let nr = 0; for (let i = 0; i < CH_NB; i++) { v[i] = Math.pow(v[i], 0.25) * W[i]; nr += v[i] * v[i]; }
+  return { v, norm: Math.sqrt(nr) || 1 };
+}
+const CHLIB = {};
+// Toutes les positions jouables (écart de 4 cases, 4 doigts, barré possible), puis rangées par accord
+function chordLib(tid) {
+  if (CHLIB[tid]) return CHLIB[tid];
+  const tun = tuningOf(tid);
+  const keep = new Map();
+  const fr = new Int8Array(6);
+  const consider = () => {
+    let lo = -1, hi = -1, n = 0, mn = 99, mx = -1, fretted = 0;
+    for (let s = 5; s >= 0; s--) if (fr[s] >= 0) { if (lo < 0) lo = s; hi = s; n++; if (fr[s] > 0) { fretted++; if (fr[s] < mn) mn = fr[s]; if (fr[s] > mx) mx = fr[s]; } }
+    if (n < 2) return;
+    let gaps = 0; for (let s = lo; s >= hi; s--) if (fr[s] < 0) gaps++;
+    if (gaps > 1 || (gaps === 1 && n < 4)) return;
+    if (fretted && mx - mn > 3) return;
+    let atMin = 0, lowMin = -1; for (let s = 5; s >= 0; s--) if (fr[s] === mn) { atMin++; if (lowMin < 0) lowMin = s; }
+    let barre = false;
+    if (atMin >= 2) { barre = true; for (let s = lowMin; s >= 0; s--) if (fr[s] === 0) { barre = false; break; } }
+    const fingers = barre ? 1 + fretted - atMin : fretted;
+    if (fingers > 4) return;
+    let key = 0; for (let s = 0; s < 6; s++) key = key * 26 + fr[s] + 1;
+    if (keep.has(key)) return;
+    let mask = 0; for (let s = 0; s < 6; s++) if (fr[s] >= 0) mask |= 1 << pc(tun[s] + fr[s]);
+    keep.set(key, { fr: Array.from(fr), n, lo, hi, mn: fretted ? mn : 0, mx: Math.max(mx, 0), fingers, barre, gaps, mask, bass: tun[lo] + fr[lo] });
+  };
+  for (let b = 0; b <= 11; b++) {
+    const o = b === 0 ? [-1, 0, 1, 2, 3, 4] : [-1, 0, b, b + 1, b + 2, b + 3];
+    for (const a5 of o) { fr[5] = a5; for (const a4 of o) { fr[4] = a4; for (const a3 of o) { fr[3] = a3; for (const a2 of o) { fr[2] = a2;
+      for (const a1 of o) { fr[1] = a1; for (const a0 of o) { fr[0] = a0; consider(); } } } } } }
+  }
+  const byMask = new Map();
+  for (const v of keep.values()) { if (!byMask.has(v.mask)) byMask.set(v.mask, []); byMask.get(v.mask).push(v); }
+  const shapeOf = v => v.fr.slice().reverse().map(x => x < 0 ? 'x' : x > 9 ? '(' + x + ')' : String(x)).join('');
+  const chords = [], templates = [];
+  for (let root = 0; root < 12; root++) for (let q = 0; q < CH_Q.length; q++) {
+    const [sym, , notes, ess] = CH_Q[q];
+    let C = 0, Es = 0; notes.forEach(i => { C |= 1 << ((root + i) % 12); }); ess.forEach(i => { Es |= 1 << ((root + i) % 12); });
+    const cand = [];
+    for (const [m, list] of byMask) {
+      if ((m & ~C) || (m & Es) !== Es) continue;
+      for (const v of list) {
+        if (q === 0 && v.n > 3) continue;            // power chord : 2 ou 3 cordes
+        if (q !== 0 && v.n < 3) continue;
+        const bassPc = pc(v.bass);
+        const prior = (OPEN_SHAPES.has(shapeOf(v)) ? 2.2 : 0) + 2 * Q_PRIOR[q] + 0.3 * v.n + (bassPc === root ? 1.4 : 0) + (v.lo >= 4 ? 0.4 : 0)
+          - 0.35 * Math.max(0, v.fingers - 2) - (v.barre ? 0.25 : 0) - 0.07 * v.mn - 0.8 * v.gaps - 0.15 * (v.mx - v.mn)
+          - (q !== 0 && v.hi > 1 ? 0.6 : 0);
+        cand.push({ v, prior, bassPc });
+      }
+    }
+    cand.sort((a, b) => b.prior - a.prior);
+    const top = cand.slice(0, 14);
+    const entry = { root, q, sym, list: [] };
+    for (const c of top) {
+      const notes2 = [], midis = [];
+      for (let s = 0; s < 6; s++) if (c.v.fr[s] >= 0) { notes2.push({ s, f: c.v.fr[s] }); midis.push(tun[s] + c.v.fr[s]); }
+      const um = [...new Set(midis)].sort((a, b) => a - b);
+      // notes « libres » : pas une harmonique (2 à 6) d'une note plus grave de la même position, donc vérifiables à l'oreille
+      const free = um.filter(m => !um.some(l => l < m && [2, 3, 4, 5, 6].some(h => Math.abs(m - l - 12 * Math.log2(h)) < 0.5)));
+      const t = { name: chordName(root, q, c.bassPc), nameFr: chordNameFr(root, q, c.bassPc), fr: c.v.fr, notes: notes2, n: c.v.n, prior: c.prior,
+                  midis: um, free, ess: CH_Q[q][3].map(i => (root + i) % 12), ...specVec(midis) };
+      entry.list.push(t); templates.push(t);
+    }
+    chords.push(entry);
+  }
+  const notesT = [];
+  for (let m = Math.min(...tun); m <= Math.max(...tun) + 19; m++) notesT.push({ midi: m, ...specVec([m]) });
+  return (CHLIB[tid] = { templates, chords, notesT, count: keep.size });
+}
+// Profil du son entendu : énergie par demi-ton (fenêtre de Hann, FFT 8192 points à ~16 kHz)
+function soundProfile(x, sr) {
+  const N = 8192, re = new Float32Array(N), im = new Float32Array(N), L = Math.min(x.length, N);
+  for (let i = 0; i < L; i++) re[i] = x[i] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / Math.max(1, L - 1)));
+  fft(re, im);
+  const df = sr / N, e = new Float32Array(CH_NB), mag = new Float32Array(N / 2);
+  for (let k = 0; k < N / 2; k++) mag[k] = Math.hypot(re[k], im[k]);
+  let mmax = 0; for (let k = 2; k < N / 2; k++) if (mag[k] > mmax) mmax = mag[k];
+  const thr = mmax * 0.004;
+  for (let k = 2; k < N / 2 - 1; k++) {
+    const b = mag[k]; if (b < thr || b < mag[k - 1] || b < mag[k + 1]) continue;
+    const la = Math.log(mag[k - 1] + 1e-12), lb = Math.log(b), lc = Math.log(mag[k + 1] + 1e-12), dd = la - 2 * lb + lc;
+    const f = (k + (dd ? 0.5 * (la - lc) / dd : 0)) * df;
+    if (f < 60 || f > 2900) continue;
+    const i = Math.round(69 + 12 * Math.log2(f / 440) - CH_M0);
+    if (i >= 0 && i < CH_NB) e[i] += b * b;
+  }
+  const floor = 0;
+  const v = new Float32Array(CH_NB), vw = new Float32Array(CH_NB), lin = new Float32Array(CH_NB), W = chW(); let nr = 0;
+  for (let i = 0; i < CH_NB; i++) { const en = Math.max(0, e[i] - floor); lin[i] = Math.sqrt(en); v[i] = Math.pow(en, 0.25); vw[i] = v[i] * W[i]; nr += vw[i] * vw[i]; }
+  return { v, vw, lin, norm: Math.sqrt(nr) || 1 };
+}
+// Dictionnaire : une note de guitare = sa fondamentale et ses harmoniques (amplitudes linéaires)
+const ND = { lo: 36, hi: 90, D: null };
+function noteDict() {
+  if (ND.D) return ND.D;
+  ND.D = [];
+  for (let m = ND.lo; m <= ND.hi; m++) {
+    const v = new Float32Array(CH_NB), f0 = mtof(m);
+    for (let h = 1; h <= 12; h++) {
+      const f = f0 * h; if (f > 2800) break;
+      const mm = 69 + 12 * Math.log2(f / 440) - CH_M0, a = Math.pow(h, -0.9) * f / (f + 80), i = Math.floor(mm), w = mm - i;
+      if (i >= 0 && i < CH_NB) v[i] += a * (1 - w);
+      if (i + 1 >= 0 && i + 1 < CH_NB) v[i + 1] += a * w;
+    }
+    ND.D.push(v);
+  }
+  return ND.D;
+}
+// Quelles notes jouent vraiment ? Décomposition non négative du spectre sur le dictionnaire :
+// une harmonique d'une note grave est expliquée par cette note, pas comptée comme une note de plus.
+function noteActivity(y) {
+  const D = noteDict(), K = D.length, x = new Float32Array(K), Dx = new Float32Array(CH_NB), r = new Float32Array(CH_NB);
+  let tot = 0; for (let i = 0; i < CH_NB; i++) tot += y[i];
+  x.fill(tot / K + 1e-9);
+  const den = D.map(d => d.reduce((a, b) => a + b, 0) + 1e-9);
+  for (let it = 0; it < 160; it++) {
+    Dx.fill(1e-9);
+    for (let k = 0; k < K; k++) { const d = D[k], xk = x[k]; if (xk) for (let i = 0; i < CH_NB; i++) Dx[i] += d[i] * xk; }
+    for (let i = 0; i < CH_NB; i++) r[i] = y[i] / Dx[i];
+    for (let k = 0; k < K; k++) { const d = D[k]; let num = 0; for (let i = 0; i < CH_NB; i++) num += d[i] * r[i]; x[k] *= num / den[k]; }
+  }
+  return x;
+}
+const cosv = (a, b) => { let d = 0; for (let i = 0; i < CH_NB; i++) d += a.vw[i] * b.v[i]; return d / (a.norm * b.norm); };
+// Compare un passage au son de chaque position connue ; renvoie l'accord le plus probable et les autres possibilités
+const MATCH = { wSpec: 1, wAct: 0, wPrior: 0.004, miss: 0.04, presMin: 0.2, ess: 0.04, bass: 0.05, cover: 0.006, debug: null };
+function matchChord(x, sr, tid) {
+  const lib = chordLib(tid), P = soundProfile(x, sr);
+  const act = noteActivity(P.lin), xs = new Float32Array(act.length); let xn = 0;
+  for (let k = 0; k < act.length; k++) { xs[k] = Math.sqrt(act[k]); xn += xs[k] * xs[k]; }
+  xn = Math.sqrt(xn) || 1;
+  const actCos = t => { let d = 0; for (const m of t.midis) { const k = m - ND.lo; if (k >= 0 && k < xs.length) d += xs[k]; } return d / (xn * Math.sqrt(t.midis.length)); };
+  // une note de la position dont la fondamentale n'est pas du tout entendue coûte des points (tierce absente d'un power chord…)
+  let vmax = 0; for (let i = 0; i < CH_NB; i++) vmax = Math.max(vmax, P.v[i]);
+  // note la plus grave réellement entendue : la position doit la contenir (à un demi-ton près)
+  let lowHeard = null; for (let i = 0; i < CH_NB; i++) if (P.v[i] >= 0.3 * vmax) { lowHeard = i + CH_M0; break; }
+  const missing = t => { let k = 0; for (const m of t.midis) { if (mtof(m) < 100) continue; const i = m - CH_M0; if (i >= 0 && i < CH_NB && P.v[i] < MATCH.presMin * vmax) k++; } return k; };
+  const scored = lib.templates.map(t => {
+    const c1 = cosv(P, t), c2 = MATCH.wAct ? actCos(t) : 0;
+    // notes indispensables de l'accord (tierce, septième…) entendues pour de vrai, pas seulement comme harmonique
+    const heardPc = new Set(); for (const m of t.free) { const i = m - CH_M0; if (i >= 0 && i < CH_NB && P.v[i] >= MATCH.presMin * vmax) heardPc.add(pc(m)); }
+    const unver = t.ess.filter(p => !heardPc.has(p)).length;
+    const bassOff = lowHeard !== null && lowHeard < t.midis[0] - 0.5 ? 1 : 0;
+    return { t, cos: c1, act: c2, sc: MATCH.wSpec * c1 + MATCH.wAct * c2 + MATCH.wPrior * t.prior - MATCH.miss * missing(t) - MATCH.ess * unver
+      - MATCH.bass * bassOff - MATCH.cover * (t.midis.length - t.free.length) };
+  });
+  scored.sort((a, b) => b.sc - a.sc);
+  if (MATCH.debug) MATCH.debug(scored, P, missing, lowHeard, vmax);
+  let note = { cos: -1, midi: null };
+  for (const t of lib.notesT) { const c1 = cosv(P, t), k = t.midi - ND.lo, c2 = k >= 0 && k < xs.length ? xs[k] / xn : 0, c = MATCH.wSpec * c1 + MATCH.wAct * c2; if (c > note.cos) note = { cos: c, midi: t.midi }; }
+  // notes réellement entendues (pour décider note seule ou accord)
+  let amax = 0; for (let k = 0; k < xs.length; k++) amax = Math.max(amax, xs[k]);
+  const heard = []; for (let k = 0; k < xs.length; k++) if (xs[k] > 0.35 * amax) heard.push(k + ND.lo);
+  const alts = [], seen = new Set();
+  for (const s of scored) { const k = s.t.fr.join(','); if (seen.has(k)) continue; seen.add(k); alts.push(s); if (alts.length >= 8) break; }
+  return { best: alts[0], alts, note, heard };
+}
+
+// Note seule ou accord ? Compare le meilleur accord au meilleur son de note seule
+const AUTO = { margin: 0.1, conf: 0.6, marginConf: 0.18, minCos: 0.8, minDb: 16 };
+function chordAnalyser(tk, o) {
+  if (o.play === 'notes') return null;
+  const cache = new Map();
+  let loud = -120, loudN = 0;
+  return (frames, s, nx, e, conf, hopS) => {
+    const key = s + ':' + nx;
+    if (cache.has(key)) return cache.get(key);
+    let res = null;
+    if (frames.length > loudN + 50 || loud === -120) { let mx = -120; for (const f of frames) if (f.hopDb > mx) mx = f.hopDb; loud = mx; loudN = frames.length; }
+    let segMax = -120; for (let j = s; j < Math.min(nx, s + 12, frames.length); j++) segMax = Math.max(segMax, frames[j].hopDb);
+    if (segMax < loud - AUTO.minDb) { cache.set(key, null); return null; }
+    const a = frames[s].t - hopS / 2 + 0.05, b = Math.min(frames[Math.min(nx, frames.length) - 1].t, a + 0.5);
+    if (b - a >= 0.08) {
+      const m = matchChord(tk.samples(a * tk.sr, b * tk.sr), tk.sr, o.tuning);
+      const margin = m.best.sc - m.note.cos;
+      const isChord = m.best.cos > (o.play === 'chords' ? 0.6 : AUTO.minCos) && (o.play === 'chords' || (margin > AUTO.margin && !(conf > AUTO.conf && margin < AUTO.marginConf)));
+      if (isChord) res = { chord: m.best.t, alts: m.alts.slice(0, 6).map(z => ({ name: z.t.name, fr: z.t.fr.slice() })) };
+    }
+    cache.set(key, res);
+    return res;
+  };
+}
+
+function prepareChords() {
+  const tid = $('#trTuning').value || 'standard';
+  if ($('#trPlay').value === 'notes' || CHLIB[tid] || TR.state !== 'idle') return;
+  const run = () => { if (!CHLIB[tid] && TR.state === 'idle') chordLib(tid); };
+  if ('requestIdleCallback' in window) requestIdleCallback(run, { timeout: 1500 }); else setTimeout(run, 400);
+}
+
 const TR = { state: 'idle', tk: null, opts: null, stream: null, src: null, node: null, sink: null, t0AC: null,
              clickTimer: 0, nextClick: 0, clickN: 0, B: 0.75, grid0AC: 0, clickTimesAC: [], lastSeg: 0, preview: [], last: null };
 const trOpts = () => ({
   mode: $('#trMode').value, bpm: clamp(parseInt($('#trBpm').value, 10) || 80, 40, 220), sub: +$('#trSub').value,
-  beats: +$('#trBeats').value, place: $('#trPlace').value, tuning: $('#trTuning').value || 'standard', guitar: $('#trGuitar').value
+  beats: +$('#trBeats').value, place: $('#trPlace').value, tuning: $('#trTuning').value || 'standard', guitar: $('#trGuitar').value, play: $('#trPlay').value
 });
 function trMessage(t) { const m = $('#trMsg'); m.textContent = t; m.hidden = !t; }
 function trMicError() {
@@ -2411,12 +2736,15 @@ async function trStart() {
   if (P.playing) pause();
   metroStop(); micStop(); refStop(); trMessage('');
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { trMicError(); return; }
+  const o0 = trOpts();
+  if (o0.play !== 'notes' && !CHLIB[o0.tuning]) { toast('Préparation des accords…'); await new Promise(r => setTimeout(r, 30)); chordLib(o0.tuning); }
   let stream;
   stopInputTest();
   try { stream = await openInput(); }
   catch (e) { trMicError(); return; }
   const o = trOpts();
   Object.assign(TR, { opts: o, tk: new PitchTracker(AC.sampleRate), stream, t0AC: null, preview: [], lastSeg: 0, clickTimesAC: [] });
+  TR.chordFn = chordAnalyser(TR.tk, o);
   TR.src = AC.createMediaStreamSource(stream);
   TR.node = AC.createScriptProcessor(2048, 1, 1);
   TR.sink = AC.createGain(); TR.sink.gain.value = 0;
@@ -2448,7 +2776,7 @@ function trStop() {
   const tk = TR.tk, o = TR.opts, off = lat() - (TR.t0AC || 0);
   trTeardown();
   const clicks = TR.clickTimesAC.map(t => t + off);
-  const notes = segmentNotes(tk.frames, tuningOf(o.tuning), tk.lag, clicks, o.guitar === 'electrique');
+  const notes = segmentNotes(tk.frames, tuningOf(o.tuning), tk.lag, clicks, o.guitar === 'electrique', TR.chordFn);
   const fixed = (o.mode === 'fixed' && TR.t0AC !== null) ? { grid0: TR.grid0AC + off, B: TR.B } : null;
   finishTranscription(notes, o, 'micro', fixed);
 }
@@ -2465,15 +2793,25 @@ function finishTranscription(notes, o, source, fixed) {
   trMessage('');
   saveTranscription();
 }
+const beatKey = b => (Math.round(b * 1000) / 1000).toFixed(3);
 function trBuild(L) {
   const { q, o, mult } = L, tun = tuningOf(o.tuning);
-  const places = assignFrets(q.notes.map(n => n.midi), tun, o.place);
-  const events = [];
-  q.notes.forEach((n, i) => { if (places[i]) events.push({ beat: q.pos[i] * mult / q.K, notes: [{ s: places[i].s, f: places[i].f }] }); });
+  const places = assignFrets(q.notes.map(n => n.chord ? null : n.midi), tun, o.place);
+  const events = [], alts = {}; let lastName = null, nChords = 0;
+  q.notes.forEach((n, i) => {
+    const beat = q.pos[i] * mult / q.K;
+    if (n.chord) {
+      const ev = { beat, notes: n.chord.notes.map(x => ({ s: x.s, f: x.f })) };
+      if (n.chord.name !== lastName) ev.label = n.chord.name;
+      lastName = n.chord.name; nChords++;
+      events.push(ev);
+      if (n.alts) alts[beatKey(beat)] = n.alts;
+    } else if (places[i]) events.push({ beat, notes: [{ s: places[i].s, f: places[i].f }] });
+  });
   const endBeat = (q.pos[q.pos.length - 1] + q.lastUnits) * mult / q.K;
   const end = Math.max(o.beats, Math.ceil(endBeat / o.beats - 1e-6) * o.beats);
   const ms = []; for (let b = 0; b <= end + 1e-6; b += o.beats) ms.push(b);
-  return { ...eventsToTab(events, ms, o.tuning), bpm: clamp(Math.round(q.bpm * mult), 30, 240), notes: events.length, measures: ms.length - 1 };
+  return { ...eventsToTab(events, ms, o.tuning), bpm: clamp(Math.round(q.bpm * mult), 30, 240), notes: events.length - nChords, chords: nChords, alts, measures: ms.length - 1 };
 }
 function saveTranscription() {
   const L = TR.last, b = trBuild(L), now = Date.now();
@@ -2483,13 +2821,14 @@ function saveTranscription() {
     s = { id: 'u' + now.toString(36), title: `Transcription du ${d}`, credit: L.source === 'fichier' ? "Transcrite d'un enregistrement" : 'Transcrite au micro' };
     USER.push(s); L.songId = s.id;
   }
-  Object.assign(s, { bpm: b.bpm, beats: L.o.beats, cpb: b.cpb, tuning: L.o.tuning, text: b.text, updated: now });
+  Object.assign(s, { bpm: b.bpm, beats: L.o.beats, cpb: b.cpb, tuning: L.o.tuning, text: b.text, updated: now, alts: b.alts });
   delete s.parsed; delete s.undo;
   L.savedAt = now;
   persistUser(); buildSelect(); renderList();
   if (P.song && P.song.id === s.id) loadSong(s.id);
   $('#trResTitle').textContent = s.title;
-  $('#trResSummary').textContent = `${b.notes} notes · ${b.measures} mesure${b.measures > 1 ? 's' : ''} · ♩ = ${b.bpm} ${L.fixed ? '(tempo du clic)' : '(mesuré sur ton jeu)'} · rangée dans Mes tablatures`;
+  const what = [b.chords ? `${b.chords} accord${b.chords > 1 ? 's' : ''}` : '', b.notes ? `${b.notes} note${b.notes > 1 ? 's' : ''}` : ''].filter(Boolean).join(' et ');
+  $('#trResSummary').textContent = `${what} · ${b.measures} mesure${b.measures > 1 ? 's' : ''} · ♩ = ${b.bpm} ${L.fixed ? '(tempo du clic)' : '(mesuré sur ton jeu)'} · rangée dans Mes tablatures`;
   $('#trResText').textContent = b.text;
   $('#trHalf').disabled = b.bpm / 2 < 30; $('#trDouble').disabled = b.bpm * 2 > 240;
   showTrPanel('result');
@@ -2511,6 +2850,9 @@ $('#trStart').addEventListener('click', trStart);
 $('#trStop').addEventListener('click', trStop);
 $('#trCancel').addEventListener('click', trCancel);
 $('#trGuitar').value = prefs.guitar === 'electrique' ? 'electrique' : 'acoustique';
+$('#trPlay').value = ['auto', 'notes', 'chords'].includes(prefs.play) ? prefs.play : 'auto';
+$('#trPlay').addEventListener('change', e => { prefs.play = e.target.value; savePrefs(); prepareChords(); });
+$('#trTuning').addEventListener('change', prepareChords);
 $('#trGuitar').addEventListener('change', e => { prefs.guitar = e.target.value; savePrefs(); });
 $('#trMode').addEventListener('change', e => {
   const fx = e.target.value === 'fixed';
@@ -2534,14 +2876,15 @@ $('#trFile').addEventListener('change', async e => {
   let pk = 1e-6; for (let i = 0; i < len; i++) pk = Math.max(pk, Math.abs(mono[i]));
   const gain = Math.min(30, 0.7 / pk); for (let i = 0; i < len; i++) mono[i] *= gain;
   const tk = new PitchTracker(sr);
-  $('#trBusyText').textContent = 'Recherche des notes…';
+  if (o.play !== 'notes' && !CHLIB[o.tuning]) { $('#trBusyText').textContent = 'Préparation des accords…'; await new Promise(r => setTimeout(r, 30)); chordLib(o.tuning); }
+  $('#trBusyText').textContent = o.play === 'notes' ? 'Recherche des notes…' : 'Recherche des notes et des accords…';
   for (let i = 0; i < len; i += sr) {
     tk.push(mono.subarray(i, Math.min(len, i + sr)));
     $('#trProgress').style.width = Math.round(100 * Math.min(1, (i + sr) / len)) + '%';
     await new Promise(r => setTimeout(r, 0));
   }
   TR.state = 'idle';
-  finishTranscription(segmentNotes(tk.frames, tuningOf(o.tuning), tk.lag, [], o.guitar === 'electrique'), o, 'fichier', null);
+  finishTranscription(segmentNotes(tk.frames, tuningOf(o.tuning), tk.lag, [], o.guitar === 'electrique', chordAnalyser(tk, o)), o, 'fichier', null);
   if (ab.length > len) toast('Seules les 5 premières minutes ont été analysées.');
 });
 
@@ -2560,13 +2903,16 @@ function trLive() {
   for (let i = fr.length - 1; i >= Math.max(0, fr.length - 4); i--) {
     const x = fr[i]; if (x.f0 && x.ap < 0.25 && x.db > -56) { live = noteLabel(Math.round(69 + 12 * Math.log2(x.f0 / 440)), 'fr'); break; }
   }
-  $('#trNote').textContent = live;
   if (now - TR.lastSeg > 300) {
     TR.lastSeg = now;
-    TR.preview = segmentNotes(fr, tuningOf(TR.opts.tuning), tk.lag, [], TR.opts.guitar === 'electrique');
-    const c = TR.preview.length;
-    $('#trCount').textContent = `${c} note${c > 1 ? 's' : ''} reconnue${c > 1 ? 's' : ''}`;
+    TR.preview = segmentNotes(fr, tuningOf(TR.opts.tuning), tk.lag, [], TR.opts.guitar === 'electrique', TR.chordFn);
+    const nc = TR.preview.filter(x => x.chord).length, nn = TR.preview.length - nc;
+    $('#trCount').textContent = [nc ? `${nc} accord${nc > 1 ? 's' : ''}` : '', `${nn} note${nn > 1 ? 's' : ''}`].filter(Boolean).join(' · ');
+    const lastIt = TR.preview[TR.preview.length - 1];
+    TR.lastChord = lastIt && lastIt.chord && tRec - lastIt.t < 2.5 ? lastIt.chord : null;
   }
+  $('#trNote').textContent = TR.lastChord ? TR.lastChord.name : live;
+  $('#trNote').title = TR.lastChord ? TR.lastChord.nameFr : '';
   drawTrCanvas(tRec);
   if (tRec > 300) { trStop(); toast("Écoute arrêtée au bout de 5 minutes."); }
 }
@@ -2579,10 +2925,22 @@ function drawTrCanvas(tNow) {
   g.textAlign = 'center'; g.textBaseline = 'middle';
   g.font = F_NAME; g.fillStyle = COL.muted;
   stringNames(TR.opts.tuning).forEach((nm, i) => g.fillText(nm, 12, top + i * gap));
-  const notes = TR.preview, pl = assignFrets(notes.map(n => n.midi), tuningOf(TR.opts.tuning), TR.opts.place);
+  const notes = TR.preview, pl = assignFrets(notes.map(n => n.chord ? null : n.midi), tuningOf(TR.opts.tuning), TR.opts.place);
   g.font = F_NOTE;
   notes.forEach((n, i) => {
-    const p = pl[i], x = xT(n.t); if (!p || x < x0 + 8) return;
+    const x = xT(n.t);
+    if (n.chord && x >= x0 + 8) {   // accord : toutes ses cordes, et son nom au-dessus
+      const recent = tNow - n.t < 0.7;
+      for (const c of n.chord.notes) {
+        const y = top + c.s * gap, t = String(c.f), w = Math.max(18, t.length * DW + 6);
+        g.fillStyle = recent ? COL.accent : COL.raise; rr(g, x - w / 2, y - 9, w, 18, 9); g.fill();
+        g.fillStyle = recent ? COL.accentInk : COL.ink; g.fillText(t, x, y + 1);
+      }
+      const prevCh = notes.slice(0, i).reverse().find(z => z.chord);
+      if (!prevCh || prevCh.chord.name !== n.chord.name) { g.font = F_LABEL; g.fillStyle = recent ? COL.accent : COL.ink; g.fillText(n.chord.name, x, 8); g.font = F_NOTE; }
+      return;
+    }
+    const p = pl[i]; if (!p || x < x0 + 8) return;
     const y = top + p.s * gap, t = String(p.f), w = Math.max(20, t.length * DW + 8), recent = tNow - n.t < 0.7;
     g.fillStyle = recent ? COL.accent : COL.raise; rr(g, x - w / 2, y - 10, w, 20, 10); g.fill();
     g.fillStyle = recent ? COL.accentInk : COL.ink; g.fillText(t, x, y + 1);
@@ -3155,6 +3513,7 @@ function go(v, fromHash) {
   view = v;
   $$('.nav button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.view === v)));
   $$('.view').forEach(s => s.classList.toggle('active', s.id === 'view-' + v));
+  if (v === 'transcrire') prepareChords();
   if (v === 'accorder' && P.song && !TN.mic) { TN.tuning = P.song.tuning || 'standard'; $('#tnTuning').value = TN.tuning; renderStrings(); }
   if (!fromHash && location.hash.slice(1) !== v) location.hash = v;
   dirty = true;
@@ -3196,7 +3555,7 @@ if ('serviceWorker' in navigator && !inFrame && (location.protocol === 'https:' 
   window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => {}); });
 }
 
-window.__frettes = { LIBRARY, parseTab, P, loadSong, eventsToTab, segmentNotes, quantizeFree, assignFrets, PitchTracker, USER: () => USER, FLUX, lastFrames: () => TR.tk && TR.tk.frames, tabToPdf, toConfig, importConfig, HELV, HELVB };
+window.__frettes = { LIBRARY, parseTab, P, loadSong, eventsToTab, segmentNotes, quantizeFree, assignFrets, PitchTracker, USER: () => USER, FLUX, lastFrames: () => TR.tk && TR.tk.frames, tabToPdf, toConfig, importConfig, HELV, HELVB, chordLib, matchChord, MATCH, CH_W, CHLIB };
 })();
 </script>
 </body>
